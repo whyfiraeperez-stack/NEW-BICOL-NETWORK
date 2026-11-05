@@ -1,7 +1,62 @@
-import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup } from 'react-leaflet';
+import React, { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, useMap } from 'react-leaflet';
 import Papa from 'papaparse';
+import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+
+// This component bypasses React's Virtual DOM to render 27k+ markers natively without lag
+const FastMarkers = ({ naps, activeNapCode }) => {
+  const map = useMap();
+  const markersRef = useRef({});
+  const layerGroupRef = useRef(L.layerGroup());
+
+  useEffect(() => {
+    layerGroupRef.current.clearLayers();
+    markersRef.current = {};
+
+    naps.forEach((nap) => {
+      const marker = L.circleMarker([nap.Latitude, nap.Longitude], {
+        radius: 5,
+        color: '#0ea5e9',
+        fillColor: '#38bdf8',
+        fillOpacity: 0.8,
+        weight: 1
+      });
+
+      const popupHtml = `
+        <div style="font-family: sans-serif; color: #0f172a; min-width: 210px;">
+          <strong style="display: block; font-size: 15px; margin-bottom: 6px;">${nap.NAP_Code}</strong>
+          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>LCP:</strong> ${nap.LCP_Code}</p>
+          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>Ports recorded:</strong> ${nap.Ports || 'N/A'}</p>
+          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>Area:</strong> ${nap.Area || 'Unknown'}</p>
+          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>Coordinates:</strong> ${nap.Latitude.toFixed(6)}, ${nap.Longitude.toFixed(6)}</p>
+          <a href="https://www.google.com/maps/search/?api=1&query=${nap.Latitude},${nap.Longitude}" target="_blank" style="color: #2563eb; text-decoration: underline; font-size: 13px; margin-top: 8px; display: inline-block;">Open in Google Maps ↗</a>
+        </div>
+      `;
+      
+      marker.bindPopup(popupHtml);
+      layerGroupRef.current.addLayer(marker);
+      markersRef.current[nap.NAP_Code] = marker;
+    });
+
+    layerGroupRef.current.addTo(map);
+
+    return () => {
+      layerGroupRef.current.clearLayers();
+      layerGroupRef.current.removeFrom(map);
+    };
+  }, [naps, map]);
+
+  useEffect(() => {
+    if (activeNapCode && markersRef.current[activeNapCode]) {
+      const marker = markersRef.current[activeNapCode];
+      map.flyTo(marker.getLatLng(), 17, { duration: 1.5 });
+      setTimeout(() => marker.openPopup(), 1500);
+    }
+  }, [activeNapCode, map]);
+
+  return null;
+};
 
 export default function App() {
   const [naps, setNaps] = useState([]);
@@ -13,6 +68,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedArea, setSelectedArea] = useState("All areas");
   const [selectedLcp, setSelectedLcp] = useState("All LCP codes");
+  
+  const [activeNapCode, setActiveNapCode] = useState(null);
 
   const areas = ["All areas", ...new Set(naps.map(n => n.Area).filter(Boolean))].sort();
   const lcps = ["All LCP codes", ...new Set(naps.map(n => n.LCP_Code).filter(Boolean))].sort();
@@ -32,28 +89,40 @@ export default function App() {
             const parsedData = results.data.map(row => {
               const getVal = (keys) => {
                 for(let k of keys) {
-                  if(row[k]) return row[k];
+                  if(row[k] !== undefined && row[k] !== "") return String(row[k]).trim();
                   const foundKey = Object.keys(row).find(rk => rk.toLowerCase().trim() === k.toLowerCase());
-                  if(foundKey) return row[foundKey];
+                  if(foundKey && row[foundKey] !== "") return String(row[foundKey]).trim();
                 }
                 return "";
               };
 
-              const napCode = getVal(["NAP code", "NAP CODE", "NAP_CODE"]);
-              const lcpMatch = napCode ? napCode.split(" NP")[0] : "";
+              const napCode = getVal(["NAP CODE", "NAP NAME", "NAP", "NODE CODE", "NAP ID", "DESCRIPTION", "NAME"]);
+              const fallbackLcp = getVal(["LCP CODE", "LCP", "LCP NAME", "LCP ID"]);
+              
+              // Exact RegEx extraction from your Vercel logic
+              const rawLcpMatch = (napCode.match(/\bLP\s*\d+\b/i) || [])[0] || fallbackLcp || "—";
+              const cleanLcp = typeof rawLcpMatch === 'string' ? rawLcpMatch.replace(/\s+/g, " ").toUpperCase() : "—";
 
               return {
                 NAP_Code: napCode,
-                Ports: getVal(["Ports", "PORTS", "PORT_COUNT", "Port Count"]),
-                Area: getVal(["Area", "AREA"]),
-                Latitude: parseFloat(getVal(["Latitude", "LATITUDE", "Lat"])),
-                Longitude: parseFloat(getVal(["Longitude", "LONGITUDE", "Long", "Lng"])),
-                LCP_Code: lcpMatch
+                Ports: getVal(["NO OF PORTS", "NUMBER OF PORTS", "PORTS", "PORT COUNT", "CAPACITY", "NAP PORTS"]),
+                Area: getVal(["AREA", "BARANGAY", "LOCATION", "ADDRESS", "SITE"]),
+                Latitude: parseFloat(getVal(["LATITUDE", "LAT", "GPS LATITUDE", "Y COORDINATE"])),
+                Longitude: parseFloat(getVal(["LONGITUDE", "LON", "LONG", "GPS LONGITUDE", "X COORDINATE"])),
+                LCP_Code: cleanLcp
               };
-            }).filter(n => !isNaN(n.Latitude) && !isNaN(n.Longitude));
+            }).filter(n => 
+                n.NAP_Code && 
+                !isNaN(n.Latitude) && !isNaN(n.Longitude) && 
+                n.Latitude >= -90 && n.Latitude <= 90 && 
+                n.Longitude >= -180 && n.Longitude <= 180
+            );
 
-            setNaps(parsedData);
-            setFilteredNaps(parsedData);
+            // Filter for uniqueness based on NAP Code
+            const uniqueNaps = Array.from(new Map(parsedData.map(item => [item.NAP_Code, item])).values());
+
+            setNaps(uniqueNaps);
+            setFilteredNaps(uniqueNaps);
             setLastUpdated(new Date().toLocaleTimeString());
             setLoading(false);
           },
@@ -170,22 +239,7 @@ export default function App() {
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 />
-                {filteredNaps.map((nap, idx) => (
-                  <CircleMarker 
-                    key={idx}
-                    center={[nap.Latitude, nap.Longitude]}
-                    radius={5}
-                    pathOptions={{ color: '#3b82f6', fillColor: '#60a5fa', fillOpacity: 0.7 }}
-                  >
-                    <Popup>
-                      <div className="text-slate-900 font-sans">
-                        <strong className="block text-sm mb-1">{nap.NAP_Code}</strong>
-                        <p className="text-xs m-0">Area: {nap.Area}</p>
-                        <p className="text-xs m-0">Ports: {nap.Ports}</p>
-                      </div>
-                    </Popup>
-                  </CircleMarker>
-                ))}
+                <FastMarkers naps={filteredNaps} activeNapCode={activeNapCode} />
               </MapContainer>
             )}
           </div>
@@ -200,16 +254,20 @@ export default function App() {
                 <thead className="bg-slate-900/50 text-xs uppercase text-slate-400 sticky top-0">
                   <tr>
                     <th className="px-3 py-2">NAP Code</th>
-                    <th className="px-3 py-2">Area</th>
                     <th className="px-3 py-2">Ports</th>
+                    <th className="px-3 py-2">Area</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-700/50">
                   {filteredNaps.slice(0, 500).map((nap, idx) => (
-                    <tr key={idx} className="hover:bg-slate-700/30">
-                      <td className="px-3 py-2 font-medium">{nap.NAP_Code}</td>
-                      <td className="px-3 py-2">{nap.Area}</td>
+                    <tr 
+                      key={idx} 
+                      className="hover:bg-slate-700/80 cursor-pointer transition-colors"
+                      onClick={() => setActiveNapCode(nap.NAP_Code)}
+                    >
+                      <td className="px-3 py-2 font-medium text-blue-400 hover:underline">{nap.NAP_Code}</td>
                       <td className="px-3 py-2">{nap.Ports}</td>
+                      <td className="px-3 py-2">{nap.Area}</td>
                     </tr>
                   ))}
                 </tbody>
