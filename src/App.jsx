@@ -1,42 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { APIProvider, Map, useMap } from '@vis.gl/react-google-maps';
-import { MarkerClusterer } from '@googlemaps/markerclusterer';
+import React, { useState, useEffect } from 'react';
+import { MapContainer, TileLayer, CircleMarker, Popup } from 'react-leaflet';
 import Papa from 'papaparse';
-
-const ClusteredMarkers = ({ naps }) => {
-  const map = useMap();
-  const clusterer = useRef(null);
-  const markersRef = useRef([]);
-
-  useEffect(() => {
-    if (!map) return;
-    if (!clusterer.current) {
-      clusterer.current = new MarkerClusterer({ map });
-    }
-
-    // Clear old markers for fresh renders
-    clusterer.current.clearMarkers();
-    markersRef.current.forEach(m => m.setMap(null));
-
-    // Generate high-performance vanilla JS markers to prevent React virtual DOM lag
-    const newMarkers = naps.map(nap => {
-      return new google.maps.marker.AdvancedMarkerElement({
-        position: { lat: nap.Latitude, lng: nap.Longitude },
-        title: `${nap.NAP_Code} | ${nap.Area} | ${nap.Ports} Ports`,
-      });
-    });
-
-    markersRef.current = newMarkers;
-    clusterer.current.addMarkers(newMarkers);
-
-    return () => {
-      clusterer.current?.clearMarkers();
-      markersRef.current.forEach(m => m.setMap(null));
-    };
-  }, [map, naps]);
-
-  return null;
-};
+import 'leaflet/dist/leaflet.css';
 
 export default function App() {
   const [naps, setNaps] = useState([]);
@@ -92,7 +57,7 @@ export default function App() {
             setLastUpdated(new Date().toLocaleTimeString());
             setLoading(false);
           },
-          error: () => {
+          error: (err) => {
             setError("Failed to parse CSV data.");
             setLoading(false);
           }
@@ -195,10 +160,33 @@ export default function App() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[600px]">
           <div className="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden relative">
             {!loading && (
-              <APIProvider apiKey="YOUR_GOOGLE_MAPS_API_KEY_HERE">
-                  <ClusteredMarkers naps={filteredNaps} />
-                </Map>
-              </APIProvider>
+              <MapContainer 
+                center={[13.41, 123.41]} 
+                zoom={9} 
+                preferCanvas={true} 
+                style={{ height: '100%', width: '100%' }}
+              >
+                <TileLayer
+                  url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+                  attribution='&copy; <a href="https://www.esri.com/">Esri</a>'
+                />
+                {filteredNaps.map((nap, idx) => (
+                  <CircleMarker 
+                    key={idx}
+                    center={[nap.Latitude, nap.Longitude]}
+                    radius={5}
+                    pathOptions={{ color: '#3b82f6', fillColor: '#60a5fa', fillOpacity: 0.7 }}
+                  >
+                    <Popup>
+                      <div className="text-slate-900 font-sans">
+                        <strong className="block text-sm mb-1">{nap.NAP_Code}</strong>
+                        <p className="text-xs m-0">Area: {nap.Area}</p>
+                        <p className="text-xs m-0">Ports: {nap.Ports}</p>
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                ))}
+              </MapContainer>
             )}
           </div>
           
@@ -229,6 +217,7 @@ export default function App() {
             </div>
           </div>
         </div>
+
       </div>
     </div>
   );
