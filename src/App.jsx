@@ -4,12 +4,13 @@ import Papa from 'papaparse';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// This component bypasses React's Virtual DOM to render 27k+ markers natively without lag
+// Bypasses React's Virtual DOM to render 27k+ markers natively without lag
 const FastMarkers = ({ naps, activeNapCode }) => {
   const map = useMap();
   const markersRef = useRef({});
   const layerGroupRef = useRef(L.layerGroup());
 
+  // 1. Render all NAPs on the map
   useEffect(() => {
     layerGroupRef.current.clearLayers();
     markersRef.current = {};
@@ -47,6 +48,61 @@ const FastMarkers = ({ naps, activeNapCode }) => {
     };
   }, [naps, map]);
 
+  // 2. NEW FEATURE: Click on the map to find nearby facilities
+  useEffect(() => {
+    const onMapClick = (e) => {
+      if (!naps || naps.length === 0) return;
+      
+      // Calculate distance from the clicked spot to every NAP
+      const withDistances = naps.map(nap => {
+        return {
+          ...nap,
+          distance: map.distance(e.latlng, L.latLng(nap.Latitude, nap.Longitude))
+        };
+      });
+      
+      // Sort by closest distance and grab the top 5
+      withDistances.sort((a, b) => a.distance - b.distance);
+      const nearest = withDistances.slice(0, 5);
+      
+      // Build custom HTML popup for nearby facilities
+      let html = `
+        <div style="font-family: sans-serif; color: #0f172a; min-width: 220px;">
+          <strong style="display: block; font-size: 14px; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
+            5 Nearest Facilities
+          </strong>
+      `;
+      
+      nearest.forEach(nap => {
+        const distStr = nap.distance < 1000 
+          ? `${Math.round(nap.distance)} m` 
+          : `${(nap.distance / 1000).toFixed(2)} km`;
+          
+        html += `
+          <div style="margin-bottom: 8px; line-height: 1.2;">
+            <strong style="font-size: 12px; color: #2563eb; display: block;">${nap.NAP_Code}</strong>
+            <span style="font-size: 11px; color: #64748b;">${distStr} away • ${nap.Ports || 0} Ports</span>
+            <p style="font-size: 10px; color: #94a3b8; margin: 2px 0 0 0;">${nap.Area || 'Unknown'}</p>
+          </div>
+        `;
+      });
+      html += `</div>`;
+      
+      // Open the popup where the user clicked
+      L.popup()
+        .setLatLng(e.latlng)
+        .setContent(html)
+        .openOn(map);
+    };
+
+    map.on('click', onMapClick);
+    
+    return () => {
+      map.off('click', onMapClick);
+    };
+  }, [naps, map]);
+
+  // 3. Handle table row clicks (Fly to NAP)
   useEffect(() => {
     if (activeNapCode && markersRef.current[activeNapCode]) {
       const marker = markersRef.current[activeNapCode];
@@ -99,7 +155,6 @@ export default function App() {
               const napCode = getVal(["NAP CODE", "NAP NAME", "NAP", "NODE CODE", "NAP ID", "DESCRIPTION", "NAME"]);
               const fallbackLcp = getVal(["LCP CODE", "LCP", "LCP NAME", "LCP ID"]);
               
-              // Exact RegEx extraction from your Vercel logic
               const rawLcpMatch = (napCode.match(/\bLP\s*\d+\b/i) || [])[0] || fallbackLcp || "—";
               const cleanLcp = typeof rawLcpMatch === 'string' ? rawLcpMatch.replace(/\s+/g, " ").toUpperCase() : "—";
 
@@ -118,7 +173,6 @@ export default function App() {
                 n.Longitude >= -180 && n.Longitude <= 180
             );
 
-            // Filter for uniqueness based on NAP Code
             const uniqueNaps = Array.from(new Map(parsedData.map(item => [item.NAP_Code, item])).values());
 
             setNaps(uniqueNaps);
@@ -227,7 +281,7 @@ export default function App() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[600px]">
-          <div className="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden relative">
+          <div className="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden relative cursor-crosshair">
             {!loading && (
               <MapContainer 
                 center={[13.41, 123.41]} 
