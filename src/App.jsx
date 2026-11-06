@@ -16,23 +16,21 @@ L.Icon.Default.mergeOptions({
 const GOOGLE_SHEET_CSV_URL =
   'https://docs.google.com/spreadsheets/d/1DgYA7-nM4DoVg70YOEGlu4Au7nb7xNpdSzyW8BZFsOg/gviz/tq?tqx=out:csv&sheet=NAP%20LOCATOR';
 
-// Helper: Safely resolve varied header naming conventions in Google Sheets
-const getFieldValue = (obj, candidateKeys, defaultValue = '') => {
-  if (!obj) return defaultValue;
-  const keys = Object.keys(obj);
-  for (const candidate of candidateKeys) {
-    const matchedKey = keys.find(
-      (k) => k.trim().toLowerCase() === candidate.trim().toLowerCase()
-    );
-    if (matchedKey && obj[matchedKey] !== undefined && obj[matchedKey] !== null) {
-      const val = String(obj[matchedKey]).trim();
+// Safely extract field values regardless of sheet column case or whitespace
+const getVal = (obj, keys, fallback = '') => {
+  if (!obj) return fallback;
+  const objKeys = Object.keys(obj);
+  for (const k of keys) {
+    const foundKey = objKeys.find((item) => item.trim().toLowerCase() === k.trim().toLowerCase());
+    if (foundKey && obj[foundKey] !== undefined && obj[foundKey] !== null) {
+      const val = String(obj[foundKey]).trim();
       if (val !== '') return val;
     }
   }
-  return defaultValue;
+  return fallback;
 };
 
-// Canvas fast markers with screen bounds rendering
+// Canvas fast markers with screen bounds rendering (handles 27k+ nodes smoothly)
 const FastMarkers = ({ naps, activeNapCode, onSelectNap }) => {
   const map = useMap();
   const layerGroupRef = useRef(L.layerGroup());
@@ -42,14 +40,14 @@ const FastMarkers = ({ naps, activeNapCode, onSelectNap }) => {
     const bounds = map.getBounds();
 
     naps.forEach((nap) => {
-      const lat = nap._lat;
-      const lng = nap._lng;
-      if (isNaN(lat) || isNaN(lng)) return;
+      const lat = nap.lat;
+      const lng = nap.lng;
+      if (typeof lat !== 'number' || typeof lng !== 'number' || isNaN(lat) || isNaN(lng)) return;
 
-      // Only draw markers within current view for smooth 60fps interaction
+      // Only draw markers inside the screen view for 60fps performance
       if (!bounds.contains([lat, lng])) return;
 
-      const isActive = activeNapCode && nap._napCode === activeNapCode;
+      const isActive = activeNapCode && nap.napCode === activeNapCode;
 
       const marker = L.circleMarker([lat, lng], {
         radius: isActive ? 8 : 5,
@@ -60,14 +58,16 @@ const FastMarkers = ({ naps, activeNapCode, onSelectNap }) => {
       });
 
       const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+      const latText = lat.toFixed(6);
+      const lngText = lng.toFixed(6);
 
       const popupContent = `
         <div style="font-family: inherit; font-size: 13px; min-width: 200px; color: #0f172a;">
-          <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px; color: #0284c7;">${nap._napCode}</div>
-          <div><strong>LCP:</strong> ${nap._lcpCode}</div>
-          <div><strong>Area:</strong> ${nap._area}</div>
-          <div><strong>Ports:</strong> ${nap._ports}</div>
-          <div style="margin-top: 6px; font-size: 11px; color: #64748b;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+          <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px; color: #0284c7;">${nap.napCode}</div>
+          <div><strong>LCP:</strong> ${nap.lcpCode}</div>
+          <div><strong>Area:</strong> ${nap.area}</div>
+          <div><strong>Ports:</strong> ${nap.ports}</div>
+          <div style="margin-top: 6px; font-size: 11px; color: #64748b;">${latText}, ${lngText}</div>
           <div style="margin-top: 8px;">
             <a href="${navUrl}" target="_blank" rel="noopener noreferrer" style="display: block; text-align: center; background: #0284c7; color: white; padding: 5px 8px; border-radius: 4px; text-decoration: none; font-size: 12px; font-weight: 600;">Directions ↗</a>
           </div>
@@ -99,7 +99,7 @@ const FastMarkers = ({ naps, activeNapCode, onSelectNap }) => {
   return null;
 };
 
-// Map size invalidate on mobile orientation change
+// Auto-resizes Leaflet container on mobile orientation change
 const MapResizer = () => {
   const map = useMap();
   useEffect(() => {
@@ -121,23 +121,15 @@ export default function App() {
   const [copiedCoord, setCopiedCoord] = useState(null);
   const mapRef = useRef(null);
 
-  // 1. Google Sheets Live Auto-Sync
+  // Live Auto-Sync from Google Sheets
   useEffect(() => {
-    // Check cached data first
+    // Clean up any stale localStorage that exceeded the quota
     try {
-      const cached = localStorage.getItem('bicol_nap_cache');
-      if (cached) {
-        const parsedCache = JSON.parse(cached);
-        if (Array.isArray(parsedCache) && parsedCache.length > 50) {
-          setNaps(parsedCache);
-          setLoading(false);
-        }
-      }
+      localStorage.removeItem('bicol_nap_cache');
     } catch (e) {
-      console.warn('Cache error:', e);
+      /* ignore */
     }
 
-    // Fetch live from Google Sheets
     Papa.parse(GOOGLE_SHEET_CSV_URL, {
       download: true,
       header: true,
@@ -145,79 +137,71 @@ export default function App() {
       transformHeader: (header) => header.trim(),
       complete: (results) => {
         if (results.data && results.data.length > 0) {
-          const normalized = [];
+          const parsedRows = [];
 
-          results.data.forEach((row, index) => {
-            const rawLat = getFieldValue(row, ['Latitude', 'LATITUDE', 'lat', 'LAT']);
-            const rawLng = getFieldValue(row, ['Longitude', 'LONGITUDE', 'lng', 'long', 'LONG', 'LON']);
+          for (let i = 0; i < results.data.length; i++) {
+            const row = results.data[i];
+            const rawLat = getVal(row, ['Latitude', 'LATITUDE', 'lat', 'LAT']);
+            const rawLng = getVal(row, ['Longitude', 'LONGITUDE', 'lng', 'long', 'LONG', 'LON']);
             const lat = parseFloat(rawLat);
             const lng = parseFloat(rawLng);
 
-            // Valid coordinate check
             if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
-              const napCode = getFieldValue(row, ['NAP CODE', 'NAP', 'NAP Code', 'nap_code'], `NAP-${index + 1}`);
-              const lcpCode = getFieldValue(row, ['LCP CODE', 'LCP', 'LCP Code', 'lcp_code'], 'N/A');
-              const area = getFieldValue(row, ['AREA', 'Area', 'area', 'LOCATION'], 'N/A');
-              const ports = getFieldValue(row, ['PORTS', 'Ports', 'ports', 'PORT'], '16');
-
-              normalized.push({
-                ...row,
-                _lat: lat,
-                _lng: lng,
-                _napCode: napCode,
-                _lcpCode: lcpCode,
-                _area: area,
-                _ports: ports,
+              parsedRows.push({
+                id: i,
+                lat,
+                lng,
+                napCode: getVal(row, ['NAP CODE', 'NAP', 'NAP Code', 'nap_code'], `NAP-${i + 1}`),
+                lcpCode: getVal(row, ['LCP CODE', 'LCP', 'LCP Code', 'lcp_code'], 'N/A'),
+                area: getVal(row, ['AREA', 'Area', 'area', 'LOCATION'], 'N/A'),
+                ports: getVal(row, ['PORTS', 'Ports', 'ports', 'PORT'], '16'),
               });
             }
-          });
-
-          if (normalized.length > 0) {
-            setNaps(normalized);
-            localStorage.setItem('bicol_nap_cache', JSON.stringify(normalized));
           }
+
+          setNaps(parsedRows);
         }
         setLoading(false);
       },
       error: (err) => {
-        console.error('Spreadsheet sync error:', err);
+        console.error('Google Sheet Sync Error:', err);
         setLoading(false);
       },
     });
   }, []);
 
-  // 2. Extract unique LCP codes
+  // Unique LCP options
   const lcpOptions = useMemo(() => {
     const set = new Set();
     naps.forEach((n) => {
-      if (n._lcpCode && n._lcpCode !== 'N/A') {
-        set.add(n._lcpCode);
+      if (n.lcpCode && n.lcpCode !== 'N/A') {
+        set.add(n.lcpCode);
       }
     });
     return Array.from(set).sort();
   }, [naps]);
 
-  // 3. Multi-field search
+  // Fast search filter across NAP, LCP, Area, and Coordinates
   const filteredNaps = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
 
     return naps.filter((n) => {
-      const matchesLcp = selectedLcp === 'ALL' || n._lcpCode === selectedLcp;
+      const matchesLcp = selectedLcp === 'ALL' || n.lcpCode === selectedLcp;
       if (!matchesLcp) return false;
 
       if (!q) return true;
 
       return (
-        n._napCode.toLowerCase().includes(q) ||
-        n._lcpCode.toLowerCase().includes(q) ||
-        n._area.toLowerCase().includes(q) ||
-        String(n._lat).includes(q) ||
-        String(n._lng).includes(q)
+        n.napCode.toLowerCase().includes(q) ||
+        n.lcpCode.toLowerCase().includes(q) ||
+        n.area.toLowerCase().includes(q) ||
+        String(n.lat).includes(q) ||
+        String(n.lng).includes(q)
       );
     });
   }, [naps, selectedLcp, searchQuery]);
 
-  // 4. GPS Locate Me
+  // GPS Locate Me
   const handleLocateMe = () => {
     if (!navigator.geolocation) {
       alert('GPS is not supported by your browser.');
@@ -238,30 +222,29 @@ export default function App() {
     );
   };
 
-  // 5. Select Row -> Center Map
+  // Center on Selected NAP
   const handleSelectNap = (nap) => {
-    setActiveNapCode(nap._napCode);
-    if (mapRef.current && !isNaN(nap._lat) && !isNaN(nap._lng)) {
-      mapRef.current.flyTo([nap._lat, nap._lng], 17, { animate: true });
+    setActiveNapCode(nap.napCode);
+    if (mapRef.current && typeof nap.lat === 'number' && typeof nap.lng === 'number') {
+      mapRef.current.flyTo([nap.lat, nap.lng], 17, { animate: true });
     }
   };
 
-  // 6. Copy Coordinates
-  const handleCopy = (idx, text) => {
+  const handleCopy = (id, text) => {
     navigator.clipboard.writeText(text);
-    setCopiedCoord(idx);
+    setCopiedCoord(id);
     setTimeout(() => setCopiedCoord(null), 1500);
   };
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
-      {/* Header Bar */}
+      {/* Top Bar */}
       <header className="bg-slate-950 border-b border-slate-800 px-4 py-3 sticky top-0 z-50 flex items-center justify-between">
         <div>
           <h1 className="text-base sm:text-lg font-bold tracking-tight text-sky-400">
             ALMASOR NAP LOCATOR
           </h1>
-          <p className="text-xs text-slate-400">Live Auto-Sync: NAP LOCATOR</p>
+          <p className="text-xs text-slate-400">Live Auto-Sync: NAP LOCATOR Tab</p>
         </div>
 
         <button
@@ -277,7 +260,7 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 p-3 sm:p-5 max-w-7xl w-full mx-auto flex flex-col gap-3">
-        {/* Search & Filter Bar */}
+        {/* Filters */}
         <div className="bg-slate-800/80 backdrop-blur border border-slate-700/80 rounded-xl p-3 flex flex-col sm:flex-row gap-3">
           <div className="flex-1">
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
@@ -341,116 +324,5 @@ export default function App() {
           </button>
         </div>
 
-        {/* Workspace: Map + Table */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[620px] flex-1">
-          {/* Map Column */}
-          <div
-            className={`lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden relative ${
-              mobileTab === 'map' ? 'h-[62vh] min-h-[380px]' : 'hidden sm:block'
-            } lg:h-full`}
-          >
-            {!loading ? (
-              <MapContainer
-                ref={mapRef}
-                center={[13.41, 123.41]}
-                zoom={9}
-                preferCanvas={true}
-                className="w-full h-full"
-                style={{ width: '100%', height: '100%' }}
-              >
-                <MapResizer />
-                <TileLayer
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                />
-                <FastMarkers
-                  naps={filteredNaps}
-                  activeNapCode={activeNapCode}
-                  onSelectNap={handleSelectNap}
-                />
-              </MapContainer>
-            ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 text-sm gap-2">
-                <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-sky-400"></div>
-                <span>Syncing NAP Records from Google Sheets...</span>
-              </div>
-            )}
-          </div>
-
-          {/* Table Column */}
-          <div
-            className={`bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex flex-col ${
-              mobileTab === 'table' ? 'h-[65vh]' : 'hidden sm:flex'
-            } lg:h-full`}
-          >
-            <div className="p-3 border-b border-slate-700 bg-slate-800/80 flex justify-between items-center">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-200">NAP Records</h3>
-                <p className="text-xs text-slate-400">
-                  Showing {filteredNaps.length} of {naps.length} nodes
-                </p>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto divide-y divide-slate-700/50">
-              {filteredNaps.length === 0 ? (
-                <div className="p-6 text-center text-xs text-slate-400">
-                  {loading ? 'Fetching data...' : 'No matching NAP records found.'}
-                </div>
-              ) : (
-                filteredNaps.slice(0, 300).map((nap, idx) => {
-                  const isActive = activeNapCode === nap._napCode;
-
-                  return (
-                    <div
-                      key={idx}
-                      onClick={() => handleSelectNap(nap)}
-                      className={`p-3 text-xs cursor-pointer transition hover:bg-slate-700/40 ${
-                        isActive ? 'bg-sky-950/60 border-l-4 border-sky-400' : ''
-                      }`}
-                    >
-                      <div className="flex justify-between items-start mb-1">
-                        <span className="font-bold text-sky-400 text-sm">{nap._napCode}</span>
-                        <span className="bg-slate-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300">
-                          {nap._ports} Ports
-                        </span>
-                      </div>
-
-                      <div className="text-slate-300 text-xs truncate">
-                        <span className="text-slate-400">LCP:</span> {nap._lcpCode} | {nap._area}
-                      </div>
-
-                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-700/40">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleCopy(idx, `${nap._lat}, ${nap._lng}`);
-                          }}
-                          className="text-[11px] text-slate-400 hover:text-sky-300 font-mono"
-                        >
-                          {copiedCoord === idx
-                            ? '✓ Copied'
-                            : `${nap._lat.toFixed(5)}, ${nap._lng.toFixed(5)}`}
-                        </button>
-
-                        <a
-                          href={`https://www.google.com/maps/dir/?api=1&destination=${nap._lat},${nap._lng}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="text-[11px] font-semibold text-sky-400 hover:text-sky-300 inline-flex items-center gap-0.5"
-                        >
-                          Directions ↗
-                        </a>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
-  );
-}
+        {/* Layout: Tall on mobile (62vh), 620px side-by-side on desktop */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:
