@@ -123,7 +123,6 @@ export default function App() {
 
   // Live Auto-Sync from Google Sheets
   useEffect(() => {
-    // Clean up any stale localStorage that exceeded the quota
     try {
       localStorage.removeItem('bicol_nap_cache');
     } catch (e) {
@@ -325,4 +324,115 @@ export default function App() {
         </div>
 
         {/* Layout: Tall on mobile (62vh), 620px side-by-side on desktop */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[620px] flex-1">
+          {/* Map Column */}
+          <div
+            className={`lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden relative ${
+              mobileTab === 'map' ? 'h-[62vh] min-h-[380px]' : 'hidden sm:block'
+            } lg:h-full`}
+          >
+            {!loading ? (
+              <MapContainer
+                ref={mapRef}
+                center={[13.41, 123.41]}
+                zoom={9}
+                preferCanvas={true}
+                className="w-full h-full"
+                style={{ width: '100%', height: '100%' }}
+              >
+                <MapResizer />
+                <TileLayer
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                />
+                <FastMarkers
+                  naps={filteredNaps}
+                  activeNapCode={activeNapCode}
+                  onSelectNap={handleSelectNap}
+                />
+              </MapContainer>
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 text-sm gap-2">
+                <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-sky-400"></div>
+                <span>Syncing NAP Records from Google Sheets...</span>
+              </div>
+            )}
+          </div>
+
+          {/* Table Column */}
+          <div
+            className={`bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex flex-col ${
+              mobileTab === 'table' ? 'h-[65vh]' : 'hidden sm:flex'
+            } lg:h-full`}
+          >
+            <div className="p-3 border-b border-slate-700 bg-slate-800/80 flex justify-between items-center">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">NAP Records</h3>
+                <p className="text-xs text-slate-400">
+                  Showing {filteredNaps.length} of {naps.length} nodes
+                </p>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-700/50">
+              {filteredNaps.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400">
+                  {loading ? 'Fetching data...' : 'No matching NAP records found.'}
+                </div>
+              ) : (
+                filteredNaps.slice(0, 300).map((nap) => {
+                  const isActive = activeNapCode === nap.napCode;
+                  const latStr = typeof nap.lat === 'number' ? nap.lat.toFixed(5) : '0';
+                  const lngStr = typeof nap.lng === 'number' ? nap.lng.toFixed(5) : '0';
+
+                  return (
+                    <div
+                      key={nap.id}
+                      onClick={() => handleSelectNap(nap)}
+                      className={`p-3 text-xs cursor-pointer transition hover:bg-slate-700/40 ${
+                        isActive ? 'bg-sky-950/60 border-l-4 border-sky-400' : ''
+                      }`}
+                    >
+                      <div className="flex justify-between items-start mb-1">
+                        <span className="font-bold text-sky-400 text-sm">{nap.napCode}</span>
+                        <span className="bg-slate-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300">
+                          {nap.ports} Ports
+                        </span>
+                      </div>
+
+                      <div className="text-slate-300 text-xs truncate">
+                        <span className="text-slate-400">LCP:</span> {nap.lcpCode} | {nap.area}
+                      </div>
+
+                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-700/40">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCopy(nap.id, `${nap.lat}, ${nap.lng}`);
+                          }}
+                          className="text-[11px] text-slate-400 hover:text-sky-300 font-mono"
+                        >
+                          {copiedCoord === nap.id ? '✓ Copied' : `${latStr}, ${lngStr}`}
+                        </button>
+
+                        <a
+                          href={`https://www.google.com/maps/dir/?api=1&destination=${nap.lat},${nap.lng}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-[11px] font-semibold text-sky-400 hover:text-sky-300 inline-flex items-center gap-0.5"
+                        >
+                          Directions ↗
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
