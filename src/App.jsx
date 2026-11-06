@@ -1,336 +1,397 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { MapContainer, TileLayer, useMap } from 'react-leaflet';
 import Papa from 'papaparse';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// Bypasses React's Virtual DOM to render 27k+ markers natively without lag
-const FastMarkers = ({ naps, activeNapCode }) => {
-  const map = useMap();
-  const markersRef = useRef({});
-  const layerGroupRef = useRef(L.layerGroup());
+// Fix default Leaflet icon paths in React
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
 
-  // 1. Render all NAPs on the map
-  useEffect(() => {
+// Component: Renders Canvas markers with viewport culling for performance
+const FastMarkers = ({ naps, activeNapCode, onSelectNap }) => {
+  const map = useMap();
+  const layerGroupRef = useRef(L.layerGroup());
+  const userMarkerRef = useRef(null);
+
+  // Redraw markers on pan/zoom or data change
+  const renderMarkers = () => {
     layerGroupRef.current.clearLayers();
-    markersRef.current = {};
+    const bounds = map.getBounds();
 
     naps.forEach((nap) => {
-      const marker = L.circleMarker([nap.Latitude, nap.Longitude], {
-        radius: 5,
-        color: '#0ea5e9',
-        fillColor: '#38bdf8',
-        fillOpacity: 0.8,
-        weight: 1
+      const lat = parseFloat(nap.Latitude);
+      const lng = parseFloat(nap.Longitude);
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      // Viewport culling: only render markers currently inside the screen view
+      if (!bounds.contains([lat, lng])) return;
+
+      const isActive = activeNapCode && (nap['NAP CODE'] || nap.nap_code) === activeNapCode;
+
+      const marker = L.circleMarker([lat, lng], {
+        radius: isActive ? 8 : 5,
+        color: isActive ? '#f59e0b' : '#0ea5e9',
+        fillColor: isActive ? '#fbbf24' : '#38bdf8',
+        fillOpacity: isActive ? 1 : 0.8,
+        weight: isActive ? 2 : 1,
       });
 
-      const popupHtml = `
-        <div style="font-family: sans-serif; color: #0f172a; min-width: 210px;">
-          <strong style="display: block; font-size: 15px; margin-bottom: 6px;">${nap.NAP_Code}</strong>
-          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>LCP:</strong> ${nap.LCP_Code}</p>
-          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>Ports recorded:</strong> ${nap.Ports || 'N/A'}</p>
-          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>Area:</strong> ${nap.Area || 'Unknown'}</p>
-          <p style="margin: 0 0 2px 0; font-size: 13px;"><strong>Coordinates:</strong> ${nap.Latitude.toFixed(6)}, ${nap.Longitude.toFixed(6)}</p>
-          <a href="https://www.google.com/maps/search/?api=1&query=${nap.Latitude},${nap.Longitude}" target="_blank" style="color: #2563eb; text-decoration: underline; font-size: 13px; margin-top: 8px; display: inline-block;">Open in Google Maps ↗</a>
+      const napCode = nap['NAP CODE'] || nap.nap_code || 'N/A';
+      const lcpCode = nap['LCP CODE'] || nap.lcp_code || 'N/A';
+      const area = nap.AREA || nap.Area || nap.area || 'N/A';
+      const ports = nap.PORTS || nap.Ports || nap.ports || '16';
+
+      const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+
+      const popupContent = `
+        <div style="font-family: inherit; font-size: 13px; min-width: 200px; color: #0f172a;">
+          <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px; color: #0284c7;">${napCode}</div>
+          <div><strong>LCP:</strong> ${lcpCode}</div>
+          <div><strong>Area:</strong> ${area}</div>
+          <div><strong>Ports:</strong> ${ports}</div>
+          <div style="margin-top: 6px; font-size: 11px; color: #64748b;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+          <div style="display: flex; gap: 8px; margin-top: 8px;">
+            <a href="${navUrl}" target="_blank" rel="noopener noreferrer" style="flex: 1; text-align: center; background: #0284c7; color: white; padding: 4px 8px; border-radius: 4px; text-decoration: none; font-size: 12px; font-weight: 600;">Directions ↗</a>
+          </div>
         </div>
       `;
-      
-      marker.bindPopup(popupHtml);
+
+      marker.bindPopup(popupContent);
+      marker.on('click', () => {
+        if (onSelectNap) onSelectNap(nap);
+      });
+
       layerGroupRef.current.addLayer(marker);
-      markersRef.current[nap.NAP_Code] = marker;
     });
+  };
 
+  useEffect(() => {
     layerGroupRef.current.addTo(map);
+    renderMarkers();
+
+    const handleMove = () => renderMarkers();
+    map.on('moveend', handleMove);
 
     return () => {
+      map.off('moveend', handleMove);
       layerGroupRef.current.clearLayers();
-      layerGroupRef.current.removeFrom(map);
     };
-  }, [naps, map]);
+  }, [map, naps, activeNapCode]);
 
-  // 2. NEW FEATURE: Click on the map to find nearby facilities
+  return null;
+};
+
+// Component: Map Resizer & Recalculator
+const MapResizer = () => {
+  const map = useMap();
   useEffect(() => {
-    const onMapClick = (e) => {
-      if (!naps || naps.length === 0) return;
-      
-      // Calculate distance from the clicked spot to every NAP
-      const withDistances = naps.map(nap => {
-        return {
-          ...nap,
-          distance: map.distance(e.latlng, L.latLng(nap.Latitude, nap.Longitude))
-        };
-      });
-      
-      // Sort by closest distance and grab the top 5
-      withDistances.sort((a, b) => a.distance - b.distance);
-      const nearest = withDistances.slice(0, 5);
-      
-      // Build custom HTML popup for nearby facilities
-      let html = `
-        <div style="font-family: sans-serif; color: #0f172a; min-width: 220px;">
-          <strong style="display: block; font-size: 14px; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
-            5 Nearest Facilities
-          </strong>
-      `;
-      
-      nearest.forEach(nap => {
-        const distStr = nap.distance < 1000 
-          ? `${Math.round(nap.distance)} m` 
-          : `${(nap.distance / 1000).toFixed(2)} km`;
-          
-        html += `
-          <div style="margin-bottom: 8px; line-height: 1.2;">
-            <strong style="font-size: 12px; color: #2563eb; display: block;">${nap.NAP_Code}</strong>
-            <span style="font-size: 11px; color: #64748b;">${distStr} away • ${nap.Ports || 0} Ports</span>
-            <p style="font-size: 10px; color: #94a3b8; margin: 2px 0 0 0;">${nap.Area || 'Unknown'}</p>
-          </div>
-        `;
-      });
-      html += `</div>`;
-      
-      // Open the popup where the user clicked
-      L.popup()
-        .setLatLng(e.latlng)
-        .setContent(html)
-        .openOn(map);
-    };
-
-    map.on('click', onMapClick);
-    
-    return () => {
-      map.off('click', onMapClick);
-    };
-  }, [naps, map]);
-
-  // 3. Handle table row clicks (Fly to NAP)
-  useEffect(() => {
-    if (activeNapCode && markersRef.current[activeNapCode]) {
-      const marker = markersRef.current[activeNapCode];
-      map.flyTo(marker.getLatLng(), 17, { duration: 1.5 });
-      setTimeout(() => marker.openPopup(), 1500);
-    }
-  }, [activeNapCode, map]);
-
+    const timer = setTimeout(() => {
+      map.invalidateSize();
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [map]);
   return null;
 };
 
 export default function App() {
   const [naps, setNaps] = useState([]);
-  const [filteredNaps, setFilteredNaps] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [lastUpdated, setLastUpdated] = useState("");
-
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedArea, setSelectedArea] = useState("All areas");
-  const [selectedLcp, setSelectedLcp] = useState("All LCP codes");
-  
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedLcp, setSelectedLcp] = useState('ALL');
   const [activeNapCode, setActiveNapCode] = useState(null);
+  const [mobileTab, setMobileTab] = useState('map'); // 'map' or 'table'
+  const [copiedCoord, setCopiedCoord] = useState(null);
+  const [userLocation, setUserLocation] = useState(null);
+  const mapRef = useRef(null);
 
-  const areas = ["All areas", ...new Set(naps.map(n => n.Area).filter(Boolean))].sort();
-  const lcps = ["All LCP codes", ...new Set(naps.map(n => n.LCP_Code).filter(Boolean))].sort();
-
-  const SHEET_URL = "https://docs.google.com/spreadsheets/d/1DgYA7-nM4DoVg70YOEGlu4Au7nb7xNpdSzyW8BZFsOg/gviz/tq?tqx=out:csv&sheet=NAP%20LOCATOR";
-
+  // 1. Data Loader with LocalStorage Caching
   useEffect(() => {
-    const fetchData = async () => {
+    const cachedData = localStorage.getItem('bicol_nap_cache');
+    if (cachedData) {
       try {
-        const response = await fetch(SHEET_URL);
-        const csvText = await response.text();
-        
-        Papa.parse(csvText, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (results) => {
-            const parsedData = results.data.map(row => {
-              const getVal = (keys) => {
-                for(let k of keys) {
-                  if(row[k] !== undefined && row[k] !== "") return String(row[k]).trim();
-                  const foundKey = Object.keys(row).find(rk => rk.toLowerCase().trim() === k.toLowerCase());
-                  if(foundKey && row[foundKey] !== "") return String(row[foundKey]).trim();
-                }
-                return "";
-              };
-
-              const napCode = getVal(["NAP CODE", "NAP NAME", "NAP", "NODE CODE", "NAP ID", "DESCRIPTION", "NAME"]);
-              const fallbackLcp = getVal(["LCP CODE", "LCP", "LCP NAME", "LCP ID"]);
-              
-              const rawLcpMatch = (napCode.match(/\bLP\s*\d+\b/i) || [])[0] || fallbackLcp || "—";
-              const cleanLcp = typeof rawLcpMatch === 'string' ? rawLcpMatch.replace(/\s+/g, " ").toUpperCase() : "—";
-
-              return {
-                NAP_Code: napCode,
-                Ports: getVal(["NO OF PORTS", "NUMBER OF PORTS", "PORTS", "PORT COUNT", "CAPACITY", "NAP PORTS"]),
-                Area: getVal(["AREA", "BARANGAY", "LOCATION", "ADDRESS", "SITE"]),
-                Latitude: parseFloat(getVal(["LATITUDE", "LAT", "GPS LATITUDE", "Y COORDINATE"])),
-                Longitude: parseFloat(getVal(["LONGITUDE", "LON", "LONG", "GPS LONGITUDE", "X COORDINATE"])),
-                LCP_Code: cleanLcp
-              };
-            }).filter(n => 
-                n.NAP_Code && 
-                !isNaN(n.Latitude) && !isNaN(n.Longitude) && 
-                n.Latitude >= -90 && n.Latitude <= 90 && 
-                n.Longitude >= -180 && n.Longitude <= 180
-            );
-
-            const uniqueNaps = Array.from(new Map(parsedData.map(item => [item.NAP_Code, item])).values());
-
-            setNaps(uniqueNaps);
-            setFilteredNaps(uniqueNaps);
-            setLastUpdated(new Date().toLocaleTimeString());
-            setLoading(false);
-          },
-          error: (err) => {
-            setError("Failed to parse CSV data.");
-            setLoading(false);
-          }
-        });
-      } catch (err) {
-        setError("Failed to connect to Google Sheets.");
+        setNaps(JSON.parse(cachedData));
         setLoading(false);
+      } catch (e) {
+        console.warn('Cache parsing failed', e);
       }
-    };
+    }
 
-    fetchData();
-    const interval = setInterval(fetchData, 300000); 
-    return () => clearInterval(interval);
+    // Replace with your raw data endpoint or public CSV path
+    Papa.parse('/data.csv', {
+      download: true,
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        if (results.data && results.data.length > 0) {
+          setNaps(results.data);
+          localStorage.setItem('bicol_nap_cache', JSON.stringify(results.data));
+        }
+        setLoading(false);
+      },
+      error: (err) => {
+        console.error('PapaParse error:', err);
+        setLoading(false);
+      },
+    });
   }, []);
 
-  useEffect(() => {
-    let result = naps;
-    if (searchQuery) {
-      result = result.filter(n => n.NAP_Code.toLowerCase().includes(searchQuery.toLowerCase()));
+  // 2. Extract unique LCP codes for dropdown
+  const lcpOptions = useMemo(() => {
+    const unique = new Set();
+    naps.forEach((n) => {
+      const code = n['LCP CODE'] || n.lcp_code;
+      if (code) unique.add(code.trim());
+    });
+    return Array.from(unique).sort();
+  }, [naps]);
+
+  // 3. Multi-field Filter (LCP + Global Search Bar)
+  const filteredNaps = useMemo(() => {
+    return naps.filter((n) => {
+      const napCode = (n['NAP CODE'] || n.nap_code || '').toLowerCase();
+      const lcpCode = (n['LCP CODE'] || n.lcp_code || '').trim();
+      const area = (n.AREA || n.Area || n.area || '').toLowerCase();
+
+      const matchesLcp = selectedLcp === 'ALL' || lcpCode === selectedLcp;
+      const q = searchQuery.toLowerCase().trim();
+      const matchesSearch = !q || napCode.includes(q) || lcpCode.toLowerCase().includes(q) || area.includes(q);
+
+      return matchesLcp && matchesSearch;
+    });
+  }, [naps, selectedLcp, searchQuery]);
+
+  // 4. GPS Locate Me Trigger
+  const handleLocateMe = () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
+      return;
     }
-    if (selectedArea !== "All areas") {
-      result = result.filter(n => n.Area === selectedArea);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setUserLocation([latitude, longitude]);
+        if (mapRef.current) {
+          mapRef.current.flyTo([latitude, longitude], 16, { animate: true });
+        }
+      },
+      (err) => {
+        alert('Could not retrieve your location: ' + err.message);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  // 5. Select row and fly map to NAP
+  const handleSelectNap = (nap) => {
+    const lat = parseFloat(nap.Latitude);
+    const lng = parseFloat(nap.Longitude);
+    const code = nap['NAP CODE'] || nap.nap_code;
+    setActiveNapCode(code);
+
+    if (mapRef.current && !isNaN(lat) && !isNaN(lng)) {
+      mapRef.current.flyTo([lat, lng], 17, { animate: true });
     }
-    if (selectedLcp !== "All LCP codes") {
-      result = result.filter(n => n.LCP_Code === selectedLcp);
-    }
-    setFilteredNaps(result);
-  }, [searchQuery, selectedArea, selectedLcp, naps]);
+  };
+
+  // 6. Copy coordinates helper
+  const handleCopy = (coords, text) => {
+    navigator.clipboard.writeText(text);
+    setCopiedCoord(coords);
+    setTimeout(() => setCopiedCoord(null), 1500);
+  };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-200 font-sans p-4">
-      <div className="max-w-7xl mx-auto space-y-4">
-        
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-white tracking-wide">Regional Network Advisory - Bicol</h1>
-            <p className="text-sm text-slate-400">
-              NAP Locator Dashboard • <span className="text-emerald-400">Synced {filteredNaps.length} records</span> • Updated {lastUpdated}
-            </p>
-          </div>
+    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
+      {/* Top Header */}
+      <header className="bg-slate-950 border-b border-slate-800 px-4 py-3 sticky top-0 z-50 flex items-center justify-between">
+        <div>
+          <h1 className="text-base sm:text-lg font-bold tracking-tight text-sky-400">
+            ALMASOR NAP LOCATOR
+          </h1>
+          <p className="text-xs text-slate-400">MTF Bicol Regional Network Advisory</p>
         </div>
 
-        {error && <div className="bg-red-900/50 border border-red-500 text-red-200 p-3 rounded">{error}</div>}
+        {/* Locate Me GPS Button */}
+        <button
+          onClick={handleLocateMe}
+          className="flex items-center gap-1.5 bg-sky-600 hover:bg-sky-500 active:scale-95 text-white text-xs font-semibold px-3 py-2 rounded-lg shadow-md transition"
+        >
+          <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+            <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z" />
+          </svg>
+          <span>Locate Me</span>
+        </button>
+      </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-slate-800 border border-slate-700 p-4 rounded-lg shadow">
-            <p className="text-xs text-slate-400 font-semibold mb-1">LOADED NAP RECORDS</p>
-            <p className="text-3xl font-bold text-white">{filteredNaps.length.toLocaleString()}</p>
+      {/* Main Content Area */}
+      <main className="flex-1 p-3 sm:p-5 max-w-7xl w-full mx-auto flex flex-col gap-3">
+        {/* Filter & Search Bar Controls */}
+        <div className="bg-slate-800/80 backdrop-blur border border-slate-700/80 rounded-xl p-3 flex flex-col sm:flex-row gap-3">
+          <div className="flex-1">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+              Search NAP / Area / LCP
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. LIA001, MTF BICOL, 630..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
           </div>
-          <div className="bg-slate-800 border border-slate-700 p-4 rounded-lg shadow">
-            <p className="text-xs text-slate-400 font-semibold mb-1">UNIQUE LCP CODES</p>
-            <p className="text-3xl font-bold text-white">
-              {new Set(filteredNaps.map(n => n.LCP_Code)).size.toLocaleString()}
-            </p>
-          </div>
-          <div className="bg-slate-800 border border-slate-700 p-4 rounded-lg shadow">
-            <p className="text-xs text-slate-400 font-semibold mb-1">TOTAL PORTS (EST.)</p>
-            <p className="text-3xl font-bold text-white">
-              {filteredNaps.reduce((acc, curr) => acc + (parseInt(curr.Ports) || 16), 0).toLocaleString()}
-            </p>
-          </div>
-        </div>
 
-        <div className="bg-slate-800 border border-slate-700 p-4 rounded-lg shadow grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="text-xs text-slate-400 font-semibold mb-1 block">SEARCH NAP / LCP / AREA</label>
-            <div className="relative">
-              <svg className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-              <input 
-                type="text"
-                placeholder="e.g. BAC001 LP9"
-                className="w-full bg-slate-900 border border-slate-700 text-white rounded py-2 pl-9 pr-3 focus:outline-none focus:border-blue-500"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-          </div>
-          <div>
-            <label className="text-xs text-slate-400 font-semibold mb-1 block">AREA</label>
-            <select 
-              className="w-full bg-slate-900 border border-slate-700 text-white rounded py-2 px-3 focus:outline-none focus:border-blue-500"
-              value={selectedArea}
-              onChange={(e) => setSelectedArea(e.target.value)}
-            >
-              {areas.map(a => <option key={a} value={a}>{a}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-slate-400 font-semibold mb-1 block">LCP CODE</label>
-            <select 
-              className="w-full bg-slate-900 border border-slate-700 text-white rounded py-2 px-3 focus:outline-none focus:border-blue-500"
+          <div className="w-full sm:w-64">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+              Filter by LCP Code
+            </label>
+            <select
               value={selectedLcp}
               onChange={(e) => setSelectedLcp(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
             >
-              {lcps.map(l => <option key={l} value={l}>{l}</option>)}
+              <option value="ALL">All LCP Codes ({lcpOptions.length})</option>
+              {lcpOptions.map((lcp) => (
+                <option key={lcp} value={lcp}>
+                  {lcp}
+                </option>
+              ))}
             </select>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[600px]">
-          <div className="h-[55vh] min-h-[380px] lg:h-full lg:col-span-2 bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden relative cursor-crosshair">
-            {!loading && (
-              <MapContainer 
-                center={[13.41, 123.41]} 
-                zoom={9} 
-                preferCanvas={true} 
-                style={{ height: '100%', width: '100%' }}
+        {/* Mobile View Toggle Switch */}
+        <div className="flex sm:hidden bg-slate-800 p-1 rounded-lg border border-slate-700">
+          <button
+            onClick={() => setMobileTab('map')}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition ${
+              mobileTab === 'map' ? 'bg-sky-600 text-white' : 'text-slate-400'
+            }`}
+          >
+            Map View
+          </button>
+          <button
+            onClick={() => setMobileTab('table')}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition ${
+              mobileTab === 'table' ? 'bg-sky-600 text-white' : 'text-slate-400'
+            }`}
+          >
+            Table Records ({filteredNaps.length})
+          </button>
+        </div>
+
+        {/* Responsive Grid: Full height on desktop, toggleable or stacked on mobile */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[620px] flex-1">
+          {/* Map Column */}
+          <div
+            className={`lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden relative ${
+              mobileTab === 'map' ? 'h-[62vh] min-h-[380px]' : 'hidden sm:block'
+            } lg:h-full`}
+          >
+            {!loading ? (
+              <MapContainer
+                ref={mapRef}
+                center={[13.41, 123.41]}
+                zoom={9}
+                preferCanvas={true}
+                className="w-full h-full"
+                style={{ width: '100%', height: '100%' }}
               >
+                <MapResizer />
                 <TileLayer
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                 />
-                <FastMarkers naps={filteredNaps} activeNapCode={activeNapCode} />
+                <FastMarkers
+                  naps={filteredNaps}
+                  activeNapCode={activeNapCode}
+                  onSelectNap={handleSelectNap}
+                />
               </MapContainer>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">
+                Loading Bicol Map Network...
+              </div>
             )}
           </div>
-          
-          <div className="h-[50vh] lg:h-full bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden flex flex-col">
-            <div className="p-3 border-b border-slate-700 bg-slate-800/50">
-              <h3 className="text-sm font-semibold text-slate-300">NAP records</h3>
-              <p className="text-xs text-slate-500">Showing top 500 max</p>
+
+          {/* Table Column */}
+          <div
+            className={`bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex flex-col ${
+              mobileTab === 'table' ? 'h-[65vh]' : 'hidden sm:flex'
+            } lg:h-full`}
+          >
+            <div className="p-3 border-b border-slate-700 bg-slate-800/80 flex justify-between items-center">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">NAP Records</h3>
+                <p className="text-xs text-slate-400">
+                  Showing {filteredNaps.length} of {naps.length} nodes
+                </p>
+              </div>
             </div>
-            <div className="flex-1 overflow-y-auto">
-              <table className="w-full text-left text-sm text-slate-300">
-                <thead className="bg-slate-900/50 text-xs uppercase text-slate-400 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-2">NAP Code</th>
-                    <th className="px-3 py-2">Ports</th>
-                    <th className="px-3 py-2">Area</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700/50">
-                  {filteredNaps.slice(0, 500).map((nap, idx) => (
-                    <tr 
-                      key={idx} 
-                      className="hover:bg-slate-700/80 cursor-pointer transition-colors"
-                      onClick={() => setActiveNapCode(nap.NAP_Code)}
-                    >
-                      <td className="px-3 py-2 font-medium text-blue-400 hover:underline">{nap.NAP_Code}</td>
-                      <td className="px-3 py-2">{nap.Ports}</td>
-                      <td className="px-3 py-2">{nap.Area}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-700/50">
+              {filteredNaps.slice(0, 300).map((nap, idx) => {
+                const code = nap['NAP CODE'] || nap.nap_code || `NAP-${idx}`;
+                const lcp = nap['LCP CODE'] || nap.lcp_code || 'N/A';
+                const area = nap.AREA || nap.Area || nap.area || 'N/A';
+                const ports = nap.PORTS || nap.Ports || nap.ports || '16';
+                const lat = parseFloat(nap.Latitude);
+                const lng = parseFloat(nap.Longitude);
+                const isActive = activeNapCode === code;
+
+                return (
+                  <div
+                    key={idx}
+                    onClick={() => handleSelectNap(nap)}
+                    className={`p-3 text-xs cursor-pointer transition hover:bg-slate-700/40 ${
+                      isActive ? 'bg-sky-950/60 border-l-4 border-sky-400' : ''
+                    }`}
+                  >
+                    <div className="flex justify-between items-start mb-1">
+                      <span className="font-bold text-sky-400 text-sm">{code}</span>
+                      <span className="bg-slate-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300">
+                        {ports} Ports
+                      </span>
+                    </div>
+
+                    <div className="text-slate-300 text-xs truncate">
+                      <span className="text-slate-400">LCP:</span> {lcp} | {area}
+                    </div>
+
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-700/40">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCopy(idx, `${lat}, ${lng}`);
+                        }}
+                        className="text-[11px] text-slate-400 hover:text-sky-300 font-mono"
+                      >
+                        {copiedCoord === idx ? '✓ Copied' : `${lat.toFixed(5)}, ${lng.toFixed(5)}`}
+                      </button>
+
+                      <a
+                        href={`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-[11px] font-semibold text-sky-400 hover:text-sky-300 inline-flex items-center gap-0.5"
+                      >
+                        Directions ↗
+                      </a>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
-
-      </div>
+      </main>
     </div>
   );
 }
