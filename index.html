@@ -5,14 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Regional Network Advisory - Bicol</title>
 
-    <!-- Mobile Fullscreen PWA Meta Tags -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="NAP Locator" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="theme-color" content="#0284c7" />
+    <meta name="theme-color" content="#0f172a" />
 
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Breakout script for Android Messenger In-App Browser -->
+    <script>
+      (function () {
+        var ua = navigator.userAgent || navigator.vendor || window.opera;
+        var isMessenger = ua.indexOf('FBAN') > -1 || ua.indexOf('FBAV') > -1 || ua.indexOf('Messenger') > -1;
+        var isAndroid = /android/i.test(ua);
+
+        // If inside Messenger on Android, launch Chrome directly via Android Intent
+        if (isMessenger && isAndroid && !window.location.hash.includes('intent_redirected')) {
+          var currentUrl = window.location.href.replace(/#.*$/, '');
+          var intentUrl = 'intent://' + currentUrl.replace(/^https?:\/\//, '') + '#Intent;scheme=https;package=com.android.chrome;end';
+          window.location.href = intentUrl;
+        }
+      })();
+    </script>
   </head>
   <body class="bg-slate-900 text-slate-200 antialiased">
     <div id="root"></div>
