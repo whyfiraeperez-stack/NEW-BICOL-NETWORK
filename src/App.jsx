@@ -280,8 +280,8 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[600px]">
-          <div className="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden relative cursor-crosshair">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[600px]">
+          <div className="h-[55vh] min-h-[380px] lg:h-full lg:col-span-2 bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden relative cursor-crosshair">
             {!loading && (
               <MapContainer 
                 center={[13.41, 123.41]} 
@@ -298,7 +298,7 @@ export default function App() {
             )}
           </div>
           
-          <div className="bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden flex flex-col">
+          <div className="h-[50vh] lg:h-full bg-slate-800 border border-slate-700 rounded-lg shadow overflow-hidden flex flex-col">
             <div className="p-3 border-b border-slate-700 bg-slate-800/50">
               <h3 className="text-sm font-semibold text-slate-300">NAP records</h3>
               <p className="text-xs text-slate-500">Showing top 500 max</p>
